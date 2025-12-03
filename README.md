@@ -4,3 +4,4 @@ Visually Impaired Assistance System - Assists Visually Impaired People
 hehehe
 meowyay
 # Ai for scocial good
+67
