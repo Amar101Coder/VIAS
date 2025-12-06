@@ -34,6 +34,7 @@ video,img{width:100%;border-radius:12px;border:1px solid #0ff6}
 </div>
 
 <script>
+    // Main function to handle video streaming and WebSocket communication
 async function main(){
   const video = document.getElementById("cam");
   const processed = document.getElementById("processed");
@@ -57,17 +58,17 @@ async function main(){
 
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d");
-
+// Capture video frames and send to server at regular intervals
   setInterval(()=>{
     if(video.videoWidth === 0) return;
 
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     ctx.drawImage(video,0,0);
-
+// Convert canvas to Blob and send via WebSocket
     canvas.toBlob(blob=>{
       if(!blob || ws.readyState !== 1) return;
-
+//  Convert Blob to base64 and send
       blob.arrayBuffer().then(buf=>{
         let b64 = btoa(
           new Uint8Array(buf).reduce((d,b)=>d+String.fromCharCode(b),"")
