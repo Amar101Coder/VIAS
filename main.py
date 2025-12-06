@@ -7,21 +7,24 @@ import pyttsx3
 import base64
 import threading
 import queue
+import time
 
-# -----------------------
-# INIT
-# -----------------------
+# =======================
+# APP INIT
+# =======================
 app = Flask(__name__)
 sock = Sock(app)
 
-cap = cv2.VideoCapture(0)
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+# =======================
+# YOLO INIT
+# =======================
+model = YOLO("yolov8n.pt")
+model.fuse()
 
-model = YOLO("yolov8n.pt")  # YOLOv8 tiny model
-
-# TTS
-tts_queue = queue.Queue()
+# =======================
+# TTS SETUP
+# =======================
+tts_queue = queue.Queue(maxsize=3)
 engine = pyttsx3.init()
 engine.setProperty("rate", 150)
 
@@ -30,89 +33,199 @@ def tts_player():
         text = tts_queue.get()
         if text is None:
             break
-        engine.say(text)
-        engine.runAndWait()
+        try:
+            engine.say(text)
+            engine.runAndWait()
+        except:
+            pass
 
 threading.Thread(target=tts_player, daemon=True).start()
 
-# -----------------------
-# DISTANCE SETUP
-# -----------------------
-FOCAL_LENGTH = 650  # adjust after calibration
+# =======================
+# DISTANCE ESTIMATION
+# =======================
+FOCAL_LENGTH = 650  # calibrate later
 
+# =======================
+# COCO CLASSES WIDTHS (cm)
+# =======================
 KNOWN_WIDTHS = {
-    "person":50.0, "bottle":7.0, "chair":40.0, "laptop":30.0, "cup":6.0
-    # Add more classes as needed
+    "person": 50,
+    "bicycle": 170,
+    "car": 180,
+    "motorcycle": 80,
+    "airplane": 3500,
+    "bus": 250,
+    "train": 300,
+    "truck": 250,
+    "boat": 200,
+    "traffic light": 30,
+    "fire hydrant": 30,
+    "stop sign": 75,
+    "parking meter": 30,
+    "bench": 120,
+    "bird": 25,
+    "cat": 30,
+    "dog": 40,
+    "horse": 80,
+    "sheep": 60,
+    "cow": 90,
+    "elephant": 250,
+    "bear": 120,
+    "zebra": 80,
+    "giraffe": 120,
+    "backpack": 35,
+    "umbrella": 100,
+    "handbag": 30,
+    "tie": 10,
+    "suitcase": 45,
+    "frisbee": 25,
+    "skis": 10,
+    "snowboard": 25,
+    "sports ball": 22,
+    "kite": 100,
+    "baseball bat": 7,
+    "baseball glove": 30,
+    "skateboard": 20,
+    "surfboard": 60,
+    "tennis racket": 30,
+    "bottle": 7,
+    "wine glass": 8,
+    "cup": 8,
+    "fork": 3,
+    "knife": 3,
+    "spoon": 3,
+    "bowl": 15,
+    "banana": 5,
+    "apple": 8,
+    "sandwich": 10,
+    "orange": 8,
+    "broccoli": 15,
+    "carrot": 3,
+    "hot dog": 5,
+    "pizza": 30,
+    "donut": 10,
+    "cake": 30,
+    "chair": 45,
+    "couch": 200,
+    "potted plant": 30,
+    "bed": 160,
+    "dining table": 150,
+    "toilet": 40,
+    "tv": 90,
+    "laptop": 30,
+    "mouse": 6,
+    "remote": 5,
+    "keyboard": 45,
+    "cell phone": 7,
+    "microwave": 50,
+    "oven": 60,
+    "toaster": 30,
+    "sink": 50,
+    "refrigerator": 70,
+    "book": 15,
+    "clock": 30,
+    "vase": 20,
+    "scissors": 8,
+    "teddy bear": 30,
+    "hair drier": 15,
+    "toothbrush": 2
 }
 
-def approx_distance(pixel_width, obj_name):
-    if pixel_width <= 0:
+def approx_distance(pixel_width, label):
+    if pixel_width < 10:
         return -1
-    width_cm = KNOWN_WIDTHS.get(obj_name.lower(), 10)  # default width
-    return (width_cm * FOCAL_LENGTH) / pixel_width
+    real_width = KNOWN_WIDTHS.get(label.lower(), 20)
+    dist = (real_width * FOCAL_LENGTH) / pixel_width
+    return min(max(dist, 10), 500)
 
-# -----------------------
+# =======================
 # ROUTES
-# -----------------------
+# =======================
 @app.route("/")
 def index():
     return send_file("index.html")
 
-# -----------------------
+# =======================
 # WEBSOCKET
-# -----------------------
+# =======================
 last_distances = {}
+last_tts_time = {}
+MIN_TTS_INTERVAL = 1.5
 
 @sock.route("/ws")
 def yolo_ws(ws):
-    global last_distances
     while True:
         try:
             frame_data = ws.receive()
             if frame_data is None:
                 break
+            if len(frame_data) < 1000:
+                continue
 
-            # Convert bytes to image
-            nparr = np.frombuffer(frame_data, np.uint8)
-            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            frame_array = np.frombuffer(frame_data, dtype=np.uint8)
+            frame = cv2.imdecode(frame_array, cv2.IMREAD_COLOR)
+            if frame is None:
+                continue
 
-            # YOLO detection
-            results = model(frame, stream=True)
+            h, w, _ = frame.shape
+            frame_center = w // 2
+
+            results = model(frame, verbose=False, conf=0.4)
+
             for r in results:
-                boxes = r.boxes.xyxy.cpu().numpy()
-                classes = r.boxes.cls.cpu().numpy()
-                scores = r.boxes.conf.cpu().numpy()
-                for box, cls_id, score in zip(boxes, classes, scores):
-                    x1, y1, x2, y2 = map(int, box)
-                    label = model.names[int(cls_id)]
-                    w = x2 - x1
+                for box in r.boxes:
+                    x1, y1, x2, y2 = map(int, box.xyxy[0])
+                    cls_id = int(box.cls[0])
+                    label = model.names[cls_id]
 
-                    # Draw box & label
-                    cv2.rectangle(frame,(x1,y1),(x2,y2),(0,255,0),2)
-                    cv2.putText(frame,f"{label} {score:.2f}",(x1,y1-10),
-                                cv2.FONT_HERSHEY_SIMPLEX,0.6,(255,255,0),2)
+                    width_px = x2 - x1
+                    distance = approx_distance(width_px, label)
+                    if distance == -1:
+                        continue
 
-                    # Distance
-                    distance = approx_distance(w, label)
-                    cv2.putText(frame,f"{distance:.1f} cm",(x1,y2+20),
-                                cv2.FONT_HERSHEY_SIMPLEX,0.6,(255,200,0),2)
+                    if x2 < frame_center:
+                        direction = "left"
+                    elif x1 > frame_center:
+                        direction = "right"
+                    else:
+                        direction = "ahead"
 
-                    # TTS if distance changed
-                    if abs(distance - last_distances.get(label,0)) > 5:
-                        tts_queue.put(f"{label} is approximately {distance:.1f} centimeters away")
-                        last_distances[label] = distance
+                    key = f"{label}_{x1//100}"
+                    now = time.time()
 
-            # Encode frame to JPEG
+                    if (
+                        key not in last_distances
+                        or abs(distance - last_distances[key]) > 7
+                    ) and now - last_tts_time.get(key, 0) > MIN_TTS_INTERVAL:
+
+                        if not tts_queue.full():
+                            tts_queue.put(
+                                f"{label} {direction}, approximately {distance:.0f} centimeters away"
+                            )
+                        last_distances[key] = distance
+                        last_tts_time[key] = now
+
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                    cv2.putText(
+                        frame,
+                        f"{label} | {direction} | {distance:.0f}cm",
+                        (x1, y1 - 8),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.55,
+                        (0, 255, 255),
+                        2
+                    )
+
             _, buffer = cv2.imencode(".jpg", frame)
-            frame_bytes = base64.b64encode(buffer).decode("utf-8")
-            ws.send(frame_bytes)
+            ws.send(base64.b64encode(buffer).decode("utf-8"))
 
         except Exception as e:
             print("WebSocket error:", e)
             break
 
-# -----------------------
-# RUN APP
-# -----------------------
-if __name__=="__main__":
-    app.run(host="0.0.0.0", port=5000, debug=False)
+# =======================
+# RUN
+# =======================
+if __name__ == "__main__":
+    app.run("0.0.0.0", 5000, debug=False)
