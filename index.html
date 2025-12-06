@@ -1,17 +1,45 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>VIAS - YOLO Vision</title>
+<title>VIAS – YOLO</title>
 
 <style>
-body{margin:0;background:#040404;color:#dff;font-family:Segoe UI,sans-serif}
-h1{text-align:center;padding:25px;font-size:40px;color:#6ff;text-shadow:0 0 15px #0ff}
-.container{display:flex;justify-content:space-evenly;flex-wrap:wrap;padding:20px}
-.box{width:45%;min-width:360px;background:#111;border-radius:15px;padding:15px;
-box-shadow:0 0 20px #0ff3;margin-bottom:25px}
-video,img{width:100%;border-radius:12px;border:1px solid #0ff6}
-.fps{margin-top:10px;text-align:center;color:#9f9}
+body{
+  margin:0;
+  background:#050505;
+  color:#cff;
+  font-family:Segoe UI,sans-serif
+}
+h1{
+  text-align:center;
+  padding:20px;
+  color:#6ff;
+}
+.container{
+  display:flex;
+  justify-content:space-around;
+  flex-wrap:wrap;
+}
+.box{
+  width:45%;
+  min-width:360px;
+  background:#111;
+  border-radius:14px;
+  padding:15px;
+  margin:15px;
+  box-shadow:0 0 20px #0ff4
+}
+video,img{
+  width:100%;
+  border-radius:12px;
+  border:1px solid #0ff6
+}
+.fps{
+  text-align:center;
+  margin-top:8px;
+  color:#9f9
+}
 </style>
 </head>
 
@@ -23,68 +51,52 @@ video,img{width:100%;border-radius:12px;border:1px solid #0ff6}
   <div class="box">
     <h2>📸 Camera</h2>
     <video id="cam" autoplay playsinline></video>
-    <p class="fps" id="fpsLocal">Local FPS: --</p>
+    <div class="fps" id="fpsLocal">Local FPS: --</div>
   </div>
 
   <div class="box">
     <h2>🤖 YOLO Output</h2>
     <img id="processed">
-    <p class="fps" id="fpsYolo">YOLO FPS: --</p>
+    <div class="fps" id="fpsYolo">YOLO FPS: --</div>
   </div>
 </div>
 
 <script>
-    // Main function to handle video streaming and WebSocket communication
-async function main(){
+(async ()=>{
   const video = document.getElementById("cam");
   const processed = document.getElementById("processed");
-  const fpsLocal = document.getElementById("fpsLocal");
-  const fpsYolo = document.getElementById("fpsYolo");
 
-  const stream = await navigator.mediaDevices.getUserMedia({video:true});
+  const stream = await navigator.mediaDevices.getUserMedia({ video:true });
   video.srcObject = stream;
 
-  const ws = new WebSocket("ws://localhost:8001/ws");
-
-  let lastLocal = performance.now();
-  let lastYolo = performance.now();
-
-  ws.onmessage = (e)=>{
-    processed.src = "data:image/jpeg;base64," + e.data;
-    let now = performance.now();
-    fpsYolo.textContent = "YOLO FPS: " + (1000/(now-lastYolo)).toFixed(1);
-    lastYolo = now;
-  };
+  const ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onopen = ()=>console.log("✅ WS open");
 
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d");
-// Capture video frames and send to server at regular intervals
-  setInterval(()=>{
-    if(video.videoWidth === 0) return;
 
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    ctx.drawImage(video,0,0);
-// Convert canvas to Blob and send via WebSocket
-    canvas.toBlob(blob=>{
-      if(!blob || ws.readyState !== 1) return;
-//  Convert Blob to base64 and send
-      blob.arrayBuffer().then(buf=>{
-        let b64 = btoa(
-          new Uint8Array(buf).reduce((d,b)=>d+String.fromCharCode(b),"")
-        );
-        ws.send(b64);
-      });
-    },"image/jpeg",0.7);
+  function sendFrame(){
+    if(video.videoWidth > 0 && ws.readyState === 1){
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      ctx.drawImage(video,0,0);
 
-    let now = performance.now();
-    fpsLocal.textContent = "Local FPS: " + (1000/(now-lastLocal)).toFixed(1);
-    lastLocal = now;
+      canvas.toBlob(blob=>{
+        if(!blob) return;
+        blob.arrayBuffer().then(buf=>{
+          ws.send(btoa(String.fromCharCode(...new Uint8Array(buf))));
+        });
+      },"image/jpeg",0.6);
+    }
+    requestAnimationFrame(sendFrame);
+  }
 
-  }, 200);
-}
+  requestAnimationFrame(sendFrame);
 
-main();
+  ws.onmessage = e=>{
+    processed.src = "data:image/jpeg;base64,"+e.data;
+  };
+})();
 </script>
 
 </body>
