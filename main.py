@@ -1,80 +1,112 @@
-import cv2
-import numpy as np
 import base64
 import time
-import queue
 import threading
+import queue
+import cv2
+import numpy as np
 
-from flask import Flask, send_file
+from flask import Flask, render_template, request, jsonify, send_from_directory
 from flask_sock import Sock
+
 from ultralytics import YOLO
 import pyttsx3
+
+from simplify import simplify_text, highlight_difficult_words
 
 # =====================
 # FLASK
 # =====================
-app = Flask(__name__)
+app = Flask(__name__, static_folder="static", template_folder="templates")
 sock = Sock(app)
 
 # =====================
 # YOLO
 # =====================
-model = YOLO("yolov8n.pt")
-model.to("cuda")
+MODEL_PATH = "yolov8n.pt"
+
+model = YOLO(MODEL_PATH)
+try:
+    model.to("cuda")
+except Exception:
+    print("⚠️ CUDA not available, using CPU")
+
 model.fuse()
 
 # =====================
-# TTS
+# TTS (pyttsx3 – OFFLINE)
 # =====================
-tts_q = queue.Queue(maxsize=3)
+tts_q = queue.Queue(maxsize=10)
+
 engine = pyttsx3.init()
 engine.setProperty("rate", 145)
+engine.setProperty("volume", 1.0)
+
+voices = engine.getProperty("voices")
+engine.setProperty("voice", voices[0].id)
 
 def tts_worker():
     while True:
         text = tts_q.get()
         if text is None:
             break
-        engine.say(text)
-        engine.runAndWait()
+        try:
+            engine.say(text)
+            engine.runAndWait()
+        except Exception as e:
+            print("❌ TTS error:", e)
 
 threading.Thread(target=tts_worker, daemon=True).start()
-
-# =====================
-# DISTANCE
-# =====================
-FOCAL_LENGTH = 650
-KNOWN_WIDTHS = {
-    "person": 50,
-    "chair": 45,
-    "bottle": 7,
-    "cup": 8,
-    "cell phone": 7,
-    "laptop": 30,
-}
-
-def approx_distance(px, label):
-    if px < 10:
-        return -1
-    w = KNOWN_WIDTHS.get(label.lower(), 20)
-    return min(max((w * FOCAL_LENGTH) / px, 10), 400)
 
 # =====================
 # ROUTES
 # =====================
 @app.route("/")
 def index():
-    return send_file("index.html")
+    return render_template("index.html")
+
+@app.route("/static/<path:filename>")
+def static_files(filename):
+    return send_from_directory("static", filename)
+
+# ---------------------
+# Text Simplification
+# ---------------------
+@app.route("/simplify", methods=["POST"])
+def simplify_api():
+    data = request.get_json() or {}
+    text = data.get("text", "")
+
+    return jsonify({
+        "simplified": simplify_text(text),
+        "highlighted": highlight_difficult_words(text)
+    })
+
+# ---------------------
+# Backend TTS endpoint
+# ---------------------
+@app.route("/tts", methods=["POST"])
+def tts_api():
+    data = request.get_json() or {}
+    text = data.get("text", "").strip()
+
+    if not text:
+        return jsonify({"ok": False})
+
+    try:
+        tts_q.put_nowait(text)
+        return jsonify({"ok": True})
+    except queue.Full:
+        return jsonify({"ok": False, "msg": "TTS queue full"}), 429
 
 # =====================
-# WEBSOCKET
+# WEBSOCKET (Camera → YOLO → Browser)
 # =====================
 @sock.route("/ws")
 def ws_handler(ws):
     print("✅ WebSocket connected")
 
     last_infer = 0
-    INFER_INTERVAL = 0.20  # 5 FPS (safe)
+    INFER_INTERVAL = 0.2  # ~5 FPS inference
 
     while True:
         data = ws.receive()
@@ -82,13 +114,11 @@ def ws_handler(ws):
             print("❌ WebSocket closed")
             break
 
-        # Decode
         try:
             frame_bytes = base64.b64decode(data)
             np_img = np.frombuffer(frame_bytes, np.uint8)
             frame = cv2.imdecode(np_img, cv2.IMREAD_COLOR)
-        except Exception as e:
-            print("❌ Decode error", e)
+        except Exception:
             continue
 
         if frame is None:
@@ -99,39 +129,45 @@ def ws_handler(ws):
             continue
         last_infer = now
 
-        print("🧠 Running YOLO")
+        try:
+            results = model(frame, conf=0.35, verbose=False)
+        except Exception as e:
+            print("❌ YOLO error:", e)
+            continue
 
-        results = model(frame, conf=0.4, verbose=False)
-
-        h, w, _ = frame.shape
+        h, w = frame.shape[:2]
         center = w // 2
 
         for r in results:
             for box in r.boxes:
-                x1, y1, x2, y2 = map(int, box.xyxy[0])
-                label = model.names[int(box.cls[0])]
+                try:
+                    x1, y1, x2, y2 = map(int, box.xyxy[0])
+                    cls = int(box.cls[0])
+                    label = model.names[cls]
 
-                width_px = x2 - x1
-                dist = approx_distance(width_px, label)
-                if dist == -1:
+                    direction = (
+                        "left" if x2 < center else
+                        "right" if x1 > center else
+                        "ahead"
+                    )
+
+                    text = f"{label} {direction}"
+
+                    cv2.rectangle(frame, (x1,y1), (x2,y2), (0,255,0), 2)
+                    cv2.putText(
+                        frame, text,
+                        (x1, max(y1-10, 15)),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6, (255,255,0), 2
+                    )
+                except Exception:
                     continue
 
-                direction = (
-                    "left" if x2 < center else
-                    "right" if x1 > center else
-                    "ahead"
-                )
-
-                txt = f"{label} {direction} {int(dist)}cm"
-
-                cv2.rectangle(frame, (x1,y1), (x2,y2), (0,255,0), 2)
-                cv2.putText(frame, txt, (x1, y1-10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6,
-                            (0,255,255), 2)
-
-        _, buf = cv2.imencode(".jpg", frame)
-        ws.send(base64.b64encode(buf).decode("utf-8"))
-
+        try:
+            _, jpg = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+            ws.send(base64.b64encode(jpg).decode("utf-8"))
+        except Exception:
+            pass
 
 # =====================
 # RUN
@@ -143,5 +179,4 @@ if __name__ == "__main__":
         debug=False,
         threaded=True,
         use_reloader=False
-)
-
+    )

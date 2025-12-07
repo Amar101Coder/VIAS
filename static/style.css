@@ -1,0 +1,60 @@
+body {
+    transition: 0.3s;
+    font-family: 'Lexend', sans-serif; /* default for output, input will override */
+    margin: 20px;
+}
+
+body.light-mode {
+    background: #ffffff;
+    color: #000;
+}
+
+body.dark-mode {
+    background: #121212;
+    color: #e8e8e8;
+}
+
+/* Output box */
+#output {
+    width: 100%;
+    min-height: 200px;
+    padding: 10px;
+    border: 2px solid #888;
+    margin-top: 20px;
+    font-family: 'Lexend', sans-serif; /* default font for output */
+    white-space: pre-wrap; /* preserve line breaks */
+    overflow-wrap: break-word;
+    transition: 0.3s;
+}
+
+body.dark-mode #output {
+    background: #1f1f1f;
+    color: #e8e8e8;
+}
+
+body.light-mode #output {
+    background: #ffffff;
+    color: #000000;
+}
+
+/* Input box */
+#input {
+    all: unset;                  /* remove inherited styles */
+    font-family: initial;        /* preserve pasted fonts */
+    font-size: 18px;
+    width: 100%;
+    min-height: 200px;
+    padding: 10px;
+    border: 2px solid #888;
+    box-sizing: border-box;
+    overflow-y: auto;
+    white-space: pre-wrap;       /* preserve line breaks */
+    overflow-wrap: break-word;
+}
+
+/* Buttons */
+button {
+    margin: 6px;
+    padding: 8px 12px;
+    cursor: pointer;
+}

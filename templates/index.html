@@ -1,0 +1,151 @@
+<!-- templates/index.html -->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>VIAS – YOLO + Dyslexia Tools</title>
+
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link href="https://fonts.googleapis.com/css2?family=Lexend:wght@300;400;600&display=swap" rel="stylesheet">
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/OpenDyslexic/0.91.9/css/OpenDyslexic.css" rel="stylesheet">
+</head>
+<body class="light-mode">
+
+  <header>
+    <h1>VIAS — Visually Impaired Assistance System</h1>
+  </header>
+
+  <main class="container">
+    <!-- YOLO / Camera -->
+    <section class="card">
+      <h2>📸 Camera + YOLO</h2>
+      <div class="media-row">
+        <video id="cam" autoplay playsinline muted></video>
+        <img id="processed" alt="Processed frame">
+      </div>
+      <div class="small">Local FPS: <span id="fpsLocal">--</span> · YOLO FPS: <span id="fpsYolo">--</span></div>
+    </section>
+
+    <!-- Dyslexia Tools -->
+    <section class="card">
+      <h2>🔤 Dyslexia Tools & Simplifier</h2>
+
+      <div class="editor-row">
+        <div>
+          <label>Input (editable)</label>
+          <div id="input" class="box" contenteditable="true" aria-label="Paste text here">Paste your text here...</div>
+        </div>
+
+        <div>
+          <label>Output</label>
+          <div id="output" class="box" aria-live="polite"></div>
+        </div>
+      </div>
+
+      <div class="controls">
+        <button id="copy-btn">Copy Output</button>
+        <button id="lexend-btn">Lexend</button>
+        <button id="opendys-btn">OpenDyslexic</button>
+        <button id="mode-toggle">Dark / Light</button>
+
+        <button id="simplify-btn">Simplify Text</button>
+        <button id="highlight-btn">Highlight Hard Words</button>
+        <button id="speak-btn">Speak (Browser TTS)</button>
+        <button id="backend-tts-btn">Speak (Server TTS)</button>
+      </div>
+
+      <div class="controls spacing">
+        Letter spacing:
+        <input id="letter-space" type="range" min="0" max="8" step="0.5" value="0" />
+        Line height:
+        <input id="line-space" type="range" min="1" max="2.5" step="0.1" value="1.5" />
+        Word spacing:
+        <input id="word-space" type="range" min="0" max="12" step="1" value="0" />
+      </div>
+    </section>
+  </main>
+
+  <script src="{{ url_for('static', filename='dyslexia.js') }}"></script>
+
+  <!-- YOLO WebSocket & camera client -->
+  <script>
+  (async function(){
+    const video = document.getElementById("cam");
+    const processed = document.getElementById("processed");
+    const fpsLocalEl = document.getElementById("fpsLocal");
+    const fpsYoloEl = document.getElementById("fpsYolo");
+
+    // get camera
+    try{
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640 }, audio: false });
+      video.srcObject = stream;
+    }catch(e){
+      console.error("camera error", e);
+      return;
+    }
+
+    // websocket
+    const ws = new WebSocket(`ws://${location.host}/ws`);
+    ws.binaryType = "arraybuffer";
+    ws.onopen = ()=>console.log("WS open");
+    ws.onclose = ()=>console.log("WS closed");
+    ws.onerror = e=>console.log("WS error", e);
+
+    // fps counters
+    let lastLocal = performance.now();
+    let lastYolo = performance.now();
+    let localFrames = 0;
+
+    // create canvas to capture frames
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d");
+
+    function sendFrame(){
+      if(video.videoWidth > 0 && ws.readyState === 1){
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        canvas.toBlob(blob => {
+          if(!blob) return;
+          blob.arrayBuffer().then(buf => {
+            // convert to base64 string
+            const u8 = new Uint8Array(buf);
+            let binary = "";
+            for(let i=0;i<u8.length;i++){
+              binary += String.fromCharCode(u8[i]);
+            }
+            const b64 = btoa(binary);
+            ws.send(b64);
+          });
+        }, "image/jpeg", 0.6);
+
+        // local fps
+        localFrames++;
+        const now = performance.now();
+        if (now - lastLocal >= 1000){
+          fpsLocalEl.textContent = localFrames;
+          localFrames = 0;
+          lastLocal = now;
+        }
+      }
+      requestAnimationFrame(sendFrame);
+    }
+    requestAnimationFrame(sendFrame);
+
+    ws.onmessage = (evt) => {
+      // server sends base64 jpg string
+      const b64 = evt.data;
+      processed.src = "data:image/jpeg;base64," + b64;
+
+      // update yolo fps
+      const now = performance.now();
+      fpsYoloEl.textContent = Math.round(1000 / Math.max(1, now - lastYolo));
+      lastYolo = now;
+    };
+  })();
+  </script>
+
+</body>
+</html>
